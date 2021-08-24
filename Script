@@ -1,0 +1,274 @@
+"""
+Dissertation - Alliance Manchester Business School
+MSc Business Analytics
+Event Study Analysis on Indonesia Stock Exchange (IDX) during COVID-19 pandemic
+Author's Student ID: 10705282
+"""
+
+###############################################################################
+########################### Load Relevant Packages ############################
+###############################################################################
+
+'''
+# Run the below code if yfinance package has not been installed
+pip install yfinance 
+'''
+import pandas as pd 
+import numpy as np
+import yfinance as yf
+import copy
+from collections import Iterable
+from scipy.stats import linregress
+from scipy import stats
+from functools import reduce  # Required in Python 3
+import operator
+
+# Function to flatten a nested list
+def flatten(lis):
+     for item in lis:
+         if isinstance(item, Iterable) and not isinstance(item, str):
+             for x in flatten(item):
+                 yield x
+         else:        
+             yield item
+
+# Function of "PRODUCT" in Excel
+def prod(iterable):
+    return reduce(operator.mul, iterable, 1)
+
+###############################################################################
+#### Get the information from the Composite Index and each sector leaders #####
+###############################################################################
+
+## UPDATE AS NEEDED: Insert the sector leaders' index name to a list
+company_list = ['tlkm','bbca','unvr','tpia','asii','adro','scma','aces','poll','klbf','mcas','giaa']
+
+## Create a function to gather the stock data
+def get_stock_data(composite_index, stock_list, start_date, end_date):
+    ## Get the composite index data
+    stock_data = yf.Ticker('^'+composite_index).history(start=start_date, end=end_date)['Close'].reset_index(level='Date')
+    stock_data = stock_data.rename(columns={'Close':composite_index})
+    ## Get the stock list data (Update the '.JK' in line 52 according to the composite index, e.g. .JK = JKSE)
+    for i in range(len(stock_list)):
+       sector_leader = yf.Ticker(stock_list[i]+'.JK').history(start=start_date, end=end_date)['Close'].reset_index(level='Date')
+       stock_data = pd.merge(stock_data, sector_leader, on=['Date'], how='left')
+       stock_data = stock_data.rename(columns={'Close':stock_list[i]})
+    stock_data = stock_data.rename(columns={'Date':'date'})
+    ## If there is any null, impute with the previous day closing price
+    stock_data.ffill(inplace=True)
+    ## Show the end result
+    return stock_data
+
+## UPDATE AS NEEDED: Use the function to create the dataframe on the stock data information, in this case we use the composite index in Indonesia (JKSE)
+stock_data = get_stock_data('jkse',company_list,'2019-12-30','2021-07-31')
+# Check dataframe structure: stock_data.info()
+# Check any nulls in the dataset creation: print(stock_data.isnull().sum().sum())
+
+'''
+################ Extract Summary Statistics of the stock data #################
+
+## Use the function to get the summary statistics for each year
+
+#2019
+stock_2019 = get_stock_data('jkse',company_list,'2018-12-29','2020-01-01')
+# stock_2019.info() , stock_2019.isna().sum()
+statistics2019 = stock_2019.describe()
+statistics2019['year']= 2019
+
+#2020
+stock_2020 = get_stock_data('jkse',company_list,'2020-01-01','2021-01-01')
+#stock_2020.info(), stock_2020.isna().sum()
+statistics2020 = stock_2020.describe()
+statistics2020['year']= 2020
+
+#First half 2021
+stock_2021 = get_stock_data('jkse',company_list,'2021-01-01','2021-08-01')
+#stock_2021.info(), stock_2021.isna().sum()
+statistics2021 = stock_2021.describe()
+statistics2021['year']= 2021
+
+## Append all summary statistics
+summary_statistics = statistics2019.append(statistics2020).append(statistics2021)
+summary_statistics.reset_index(level=0, inplace=True)
+summary_statistics = summary_statistics.rename(columns={'index':'measure'})
+summary_statistics.to_excel(r'Insert output drive location here/SummaryStatistics2019-2021.xlsx', index = False)
+'''
+###############################################################################
+############### Calculate the daily return for each stock #####################
+###############################################################################
+
+## Create a deep copy dataframe to calculate the stock's daily return
+stock_return = copy.deepcopy(stock_data)
+    
+## Calculate the daily return for composite index (JKSE)
+stock_return['jkse'] = stock_return['jkse'].pct_change(1)
+
+## Performed a for loop to calculate the daily return for each sector leaders
+for i in range(len(company_list)):
+    stock_return[company_list[i]] = stock_return[company_list[i]].pct_change(1)
+    
+## Remove the first row (30/12/2019) and reset index
+stock_return = stock_return.iloc[1: , :].reset_index().iloc[:,1:]
+# Check: stock_return.info()
+# Check any nulls in the dataset creation: print(stock_return.isnull().sum().sum())
+# If you want to export: stock_return.to_excel(r'Insert output drive location here/StockData.xlsx', index = False)
+
+###############################################################################
+########################## Event Study Analysis ###############################
+###############################################################################
+
+def eventstudy_marketmodel(stock_data, sector_leaders, event_dates, estimation_window, window_days):
+    ## Setup empty list 
+    event_index_final = []
+    
+    ## Find the event dates indexes
+    index = stock_data.index
+    for l in range(len(event_dates)):
+        condition = stock_data['date'] == event_dates[l]
+        event_index1 = index[condition]
+        event_index_list = event_index1.to_list()
+        event_index_final.append(event_index_list)
+    event_index = list(flatten(event_index_final))
+    # Check: stock_return.iloc[event_index[4],:]
+    
+    ## Create an empty dataframe
+    final_result = pd.DataFrame() 
+    
+    ## Start loopong for each event!
+    for j in (range(len(event_index))):
+        ## Get the event's estimation window + event window
+        event_window = stock_return.iloc[(event_index[j]-(estimation_window+window_days)):(event_index[j]+(1+window_days))]
+        
+        ## Get the event's estimation window (42 trading days before event window)
+        event_estimation = stock_return.iloc[(event_index[j]-(estimation_window+window_days)):(event_index[j]-(window_days))]
+    
+        ## Calculate the slope and intercept for all stock indices
+        for i in range(len(sector_leaders)):
+            event_window[sector_leaders[i]+"_slope"] = linregress(event_estimation['jkse'], event_estimation[sector_leaders[i]])[0]
+            event_window[sector_leaders[i]+"_intercept"] = linregress(event_estimation['jkse'], event_estimation[sector_leaders[i]])[1]
+        #check: event_window.info()
+    
+        ## Calculate the market model abnormal returns for all stock indices
+        # Deep copy the event window dataframe
+        event_abnormal = copy.deepcopy(event_window)
+        # Calculate the abnormal return
+        for i in range(len(sector_leaders)):
+            event_abnormal[sector_leaders[i]] = event_abnormal[sector_leaders[i]]-(event_abnormal[sector_leaders[i]+"_intercept"]+event_abnormal[sector_leaders[i]+"_slope"]*event_abnormal['jkse'])
+        event_abnormal = event_abnormal.iloc[:,0:(len(sector_leaders)+2)]
+        del event_abnormal['jkse']
+        #event_abnormal.info() 
+    
+        ## Event Day Abnormal Return
+        event_day = copy.deepcopy(event_abnormal.iloc[(estimation_window+window_days),:]).to_frame().unstack().reset_index(name='eventday_BHAR').iloc[1:,1:].rename(columns={'level_1':'sector_leader'})
+        event_day['eventday_BHAR'] = pd.to_numeric(event_day['eventday_BHAR'], errors='coerce')
+    
+        ## Anticipation Window BHAR 
+        event_anticipation = copy.deepcopy(event_abnormal.iloc[(estimation_window):(estimation_window+window_days),:])
+        #event_anticipation.info()
+    
+        for x in range(len(sector_leaders)):
+            a = []
+            for i in range(len(event_anticipation)):        
+                    a.append((np.cumprod(event_anticipation[sector_leaders[x]].iloc[i]+1)[-1]))
+            event_anticipation[sector_leaders[x]] = pd.to_numeric(prod(a)-1,errors='coerce')
+        
+        event_anticipation = event_anticipation.iloc[0,:].to_frame().unstack().reset_index(name='anticipation_BHAR').iloc[1:,1:].rename(columns={'level_1':'sector_leader'})
+
+        ## Adjusment Window BHAR 
+        event_adjustment = copy.deepcopy(event_abnormal.iloc[(estimation_window+window_days+1):,:])
+        
+        for y in range(len(sector_leaders)):
+            a = []
+            for i in range(len(event_adjustment)):        
+                    a.append((np.cumprod(event_adjustment[sector_leaders[y]].iloc[i]+1)[-1]))
+            event_adjustment[sector_leaders[y]] = pd.to_numeric(prod(a)-1,errors='coerce')
+        
+        event_adjustment = event_adjustment.iloc[0,:].to_frame().unstack().reset_index(name='adjustment_BHAR').iloc[1:,1:].rename(columns={'level_1':'sector_leader'})
+        
+        ## Total Event Window BHAR
+        total_event = copy.deepcopy(event_abnormal.iloc[(estimation_window):,:])
+        
+        for z in range(len(sector_leaders)):
+            a = []
+            for i in range(len(total_event)):        
+                    a.append((np.cumprod(total_event[sector_leaders[z]].iloc[i]+1)[-1]))
+            total_event[sector_leaders[z]] = pd.to_numeric(prod(a)-1,errors='coerce')
+
+        total_event = total_event.iloc[0,:].to_frame().unstack().reset_index(name='total_BHAR').iloc[1:,1:].rename(columns={'level_1':'sector_leader'})
+        
+        ## BHAAR calculation
+        event_BHAR = pd.merge(pd.merge(pd.merge(event_day, event_anticipation, on="sector_leader"),event_adjustment, on="sector_leader"),total_event, on="sector_leader")
+        
+        ## Calculation of standard deviation
+        std_dev = copy.deepcopy(event_abnormal)
+        # Create empty lists for the loop
+        std = []
+        std_window = []
+        std_window_total = []
+        # Star looping through
+        for i in range(len(sector_leaders)):    
+            std.append(std_dev[sector_leaders[i]].std())
+            std_window.append(std_dev[sector_leaders[i]].std()*np.sqrt(window_days))
+            std_window_total.append(std_dev[sector_leaders[i]].std()*np.sqrt(window_days*2+1))
+        # Convert into a dataframe
+        std_dev_final = pd.DataFrame({'sector_leader': sector_leaders,
+                                     'std_dev': std,
+                                     'std_devwindow': std_window,
+                                     'std_devwindowtotal': std_window_total
+                                    })
+        
+        ## Merge the BHAR information with the standard deviation information
+        event_study_result = pd.merge(event_BHAR, std_dev_final, on='sector_leader')
+        
+        ## Calculate the t-statistics score for event day, anticipation, adjustment, and event window
+        event_study_result['t-stat_event'] = pd.to_numeric(event_study_result['eventday_BHAR']/event_study_result['std_dev'], errors='coerce')
+        event_study_result['t-stat_anticipation'] = pd.to_numeric(event_study_result['anticipation_BHAR']/event_study_result['std_devwindow'], errors='coerce')
+        event_study_result['t-stat_adjustment'] = pd.to_numeric(event_study_result['adjustment_BHAR']/event_study_result['std_devwindow'], errors='coerce')
+        event_study_result['t-stat_total'] = pd.to_numeric(event_study_result['total_BHAR']/event_study_result['std_devwindowtotal'], errors='coerce')
+        # event_study_result.info()
+        
+        ## Calculate the two-sided p-value score for event day, anticipation, adjustment, and event window
+        event_study_result['p-value_event'] = stats.t.sf(np.abs(abs(event_study_result['t-stat_event'])), (estimation_window)-2)*2 
+        event_study_result['p-value_anticipation'] = stats.t.sf(np.abs(abs(event_study_result['t-stat_anticipation'])), (estimation_window)-2)*2 
+        event_study_result['p-value_adjustment'] = stats.t.sf(np.abs(abs(event_study_result['t-stat_adjustment'])), (estimation_window)-2)*2 
+        event_study_result['p-value_total'] = stats.t.sf(np.abs(abs(event_study_result['t-stat_total'])), (estimation_window)-2)*2 
+        # event_study_result.info()
+        
+        ## Create a new column to indicate the event number
+        event_study_result['event_id'] = "event_"+str(j+1)
+        event_study_result = event_study_result[ ['event_id'] + [ col for col in event_study_result.columns if col != 'event_id' ] ].drop(['std_dev','std_devwindow','std_devwindowtotal'], axis = 1)
+        
+        ## Return the final result
+        final_result = final_result.append(event_study_result, ignore_index = True)
+    return final_result
+
+###############################################################################
+###### Apply the event study function to get the results for each event #######
+###############################################################################
+
+#### UPDATE AS NEEDED: Create event dates list
+events = ['2020-03-26','2020-04-08','2020-04-21','2020-09-10','2020-11-03','2020-12-16','2021-01-04','2021-03-26','2021-07-01']
+
+result_1days = eventstudy_marketmodel(stock_return,company_list,events,42,1)
+result_2days = eventstudy_marketmodel(stock_return,company_list,events,42,2)
+result_3days = eventstudy_marketmodel(stock_return,company_list,events,42,3)
+result_4days = eventstudy_marketmodel(stock_return,company_list,events,42,4)
+result_5days = eventstudy_marketmodel(stock_return,company_list,events,42,5)
+
+#### Export to Excel file
+
+# Specify the path
+path = 'Insert output drive location here'
+
+# Define an Excel writer object and the target file
+Excelwriter = pd.ExcelWriter(path+"EventStudy_IndonesianInterventions1.xlsx",engine="xlsxwriter")
+
+# Write each result to different sheets
+result_1days.to_excel(Excelwriter, sheet_name='3 Days', index = False)
+result_2days.to_excel(Excelwriter, sheet_name='5 Days', index = False)
+result_3days.to_excel(Excelwriter, sheet_name='7 Days', index = False)
+result_4days.to_excel(Excelwriter, sheet_name='9 Days', index = False)
+result_5days.to_excel(Excelwriter, sheet_name='11 Days', index = False)
+
+#Save the file
+Excelwriter.save()
